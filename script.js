@@ -148,7 +148,6 @@ function findUser(email){ return DB.users.find(u=>u.email===email); }
 function me(){ return findUser(SESSION); }
 function initials(name){ return (name||'?').split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase(); }
 
-/* ---------- Toast (was missing!) ---------- */
 function toast(msg, title){
   const wrap = document.getElementById('toast-wrap');
   if(!wrap) return;
@@ -166,7 +165,6 @@ function toast(msg, title){
   setTimeout(()=>{ t.style.opacity='0'; t.style.transform='translateX(30px)'; t.style.transition='.3s'; setTimeout(()=>t.remove(), 300); }, 3500);
 }
 
-/* ---------- XSS sanitizer ---------- */
 function esc(str){
   const d = document.createElement('div');
   d.textContent = str || '';
@@ -177,15 +175,11 @@ function escAttr(str){
   return (str||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-/* ---------- notifications ---------- */
 async function notify(email, text){
   DB.notifications.push({id:uid(), forEmail:email, text, ts:Date.now(), read:false});
   await saveKey('notifications');
 }
 
-/* ============================================================
-   ROTATING HERO SLOGANS
-   ============================================================ */
 const SLOGANS = [
   "Un étudiant expérimenté, un étudiant accompagné.",
   "Construisons votre réussite académique et professionnelle.",
@@ -307,9 +301,6 @@ async function shareSite(){
   toast('Lien copié : '+link,'Partagé');
 }
 
-/* ============================================================
-   NAV — mobile hamburger menu
-   ============================================================ */
 function toggleMobileNav(){
   const nav = document.getElementById('navLinks');
   if(nav) nav.classList.toggle('open');
@@ -326,9 +317,6 @@ document.addEventListener('click', function(e){
   closeMobileNav();
 });
 
-/* ============================================================
-   SCROLL EFFECTS — nav shadow + back-to-top + reveal
-   ============================================================ */
 const mainNav = document.getElementById('mainNav');
 const backToTopBtn = document.getElementById('backToTop');
 
@@ -1731,9 +1719,6 @@ window.debugAgroMentor = async function(){
   console.log('=== FIN DIAGNOSTIC ===');
 };
 
-/* ============================================================
-   REOPTIMISATION DES BINÔMES PROPOSÉS
-   ============================================================
    Cette fonction réévalue toutes les propositions "proposé" 
    existantes pour trouver de meilleurs matchs.
    À utiliser après une mise à jour du code ou manuellement 
