@@ -1719,6 +1719,7 @@ window.debugAgroMentor = async function(){
   console.log('=== FIN DIAGNOSTIC ===');
 };
 
+/*
    Cette fonction réévalue toutes les propositions "proposé" 
    existantes pour trouver de meilleurs matchs.
    À utiliser après une mise à jour du code ou manuellement 
