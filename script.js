@@ -711,17 +711,22 @@ function getBinomeCompatibility(binome){
 async function tryAutoMatch(user){
   console.log('🔍 tryAutoMatch pour:', user.email, user.role);
   
-  // 1. Bloqué si binôme VALIDÉ
-  const validatedBinome = DB.binomes.find(b => 
-    (b.parrainEmail === user.email || b.filleulEmail === user.email) && 
-    b.status === 'validé'
-  );
-  if(validatedBinome){
-    console.log('⏸️', user.email, 'a déjà un binôme validé');
-    return;
+  // 1. Règles de blocage :
+  //    - Un FILLEUL ne peut avoir qu'UN SEUL binôme validé
+  //    - Un PARRAIN peut avoir PLUSIEURS filleuls (pas de blocage)
+  if(user.role === 'filleul'){
+    const validatedBinome = DB.binomes.find(b => 
+      b.filleulEmail === user.email && b.status === 'validé'
+    );
+    if(validatedBinome){
+      console.log('⏸️', user.email, '(filleul) a déjà un binôme validé');
+      return;
+    }
   }
   
-  // 2. Binôme PROPOSÉ existant (si applicable)
+  // 2. Binôme PROPOSÉ existant (pour le user)
+  // Pour un parrain, on cherche une proposition où il est parrain
+  // Pour un filleul, on cherche une proposition où il est filleul
   const existingProposed = DB.binomes.find(b => 
     (b.parrainEmail === user.email || b.filleulEmail === user.email) && 
     b.status === 'proposé'
@@ -731,16 +736,30 @@ async function tryAutoMatch(user){
     console.log('📊 Score existant pour', user.email, ':', existingScore + '%');
   }
   
-  // 3. Trouver tous les candidats (exclure ceux avec binôme VALIDÉ uniquement)
+  // 3. Trouver tous les candidats
+  // Pour un parrain : chercher des filleuls qui n'ont PAS de binôme validé
+  // Pour un filleul : chercher un parrain (pas de restriction)
   const oppRole = user.role === 'parrain' ? 'filleul' : 'parrain';
-  const candidates = DB.users.filter(c => 
-    c.role === oppRole && 
-    c.status === 'actif' &&
-    !DB.binomes.some(b => 
-      (b.parrainEmail === c.email || b.filleulEmail === c.email) && 
+  const candidates = DB.users.filter(c => {
+    if(c.role !== oppRole) return false;
+    if(c.status !== 'actif') return false;
+    if(c.email === user.email) return false;
+    // Un filleul ne peut avoir qu'un seul parrain validé
+    if(c.role === 'filleul'){
+      const alreadyValidated = DB.binomes.some(b => 
+        b.filleulEmail === c.email && b.status === 'validé'
+      );
+      if(alreadyValidated) return false;
+    }
+    // Ne pas apparier deux utilisateurs déjà dans le même binôme validé
+    const alreadyTogether = DB.binomes.some(b =>
+      ((b.parrainEmail === user.email && b.filleulEmail === c.email) ||
+       (b.filleulEmail === user.email && b.parrainEmail === c.email)) &&
       b.status === 'validé'
-    )
-  );
+    );
+    if(alreadyTogether) return false;
+    return true;
+  });
   
   console.log('👥 Candidats trouvés:', candidates.length);
   if(!candidates.length){
@@ -901,11 +920,90 @@ function goto(view){
 
 function myBinome(){
   const u=me();
+  // Pour un filleul : un seul binôme validé possible
+  if(u.role === 'filleul'){
+    return DB.binomes.find(b=> b.filleulEmail===u.email && b.status==='validé');
+  }
+  // Pour un parrain : retourner le premier (compatibilité ascendante)
   return DB.binomes.find(b=> (b.parrainEmail===u.email||b.filleulEmail===u.email) && b.status==='validé');
+}
+function myBinomes(){
+  const u=me();
+  if(!u) return [];
+  // Pour un parrain : retourner TOUS ses binômes validés
+  if(u.role === 'parrain'){
+    return DB.binomes.filter(b=> b.parrainEmail===u.email && b.status==='validé');
+  }
+  // Pour un filleul : un seul binôme validé possible
+  const b = DB.binomes.find(b=> b.filleulEmail===u.email && b.status==='validé');
+  return b ? [b] : [];
 }
 function renderDashboard(){
   const u=me();
   const unread = DB.notifications.filter(n=>n.forEmail===u.email && !n.read).length;
+  
+  // Contenu spécifique pour les parrains (plusieurs filleuls)
+  let binomeSection = '';
+  if(u.role === 'parrain'){
+    const mesBinomes = DB.binomes.filter(b=> b.parrainEmail===u.email && b.status==='validé');
+    const mesPropositions = DB.binomes.filter(b=> b.parrainEmail===u.email && b.status==='proposé');
+    
+    if(mesBinomes.length > 0){
+      binomeSection = `
+        <div class="panel">
+          <h3>Mes filleuls (${mesBinomes.length})</h3>
+          <div style="display:flex;flex-direction:column;gap:10px;">
+            ${mesBinomes.map(b => {
+              const filleul = findUser(b.filleulEmail);
+              return `<div style="display:flex;align-items:center;gap:14px;padding:12px;background:var(--cream);border-radius:12px;border:1px solid var(--line);">
+                <div class="avatar" style="width:48px;height:48px;font-size:15px;">${initials((filleul?.prenom||'')+' '+(filleul?.nom||''))}</div>
+                <div style="flex:1;">
+                  <b>${esc(filleul?.prenom||'')} ${esc(filleul?.nom||'')}</b><br>
+                  <span style="font-size:12px;color:var(--ink-soft);">${esc(filleul?.niveau||'')} · ${esc(filleul?.domaine||'')}</span>
+                </div>
+                <span class="badge ok">Validé · ${getBinomeCompatibility(b)}%</span>
+              </div>`;
+            }).join('')}
+          </div>
+        </div>`;
+    }
+    
+    if(mesPropositions.length > 0){
+      binomeSection += `
+        <div class="panel">
+          <h3>Propositions en attente (${mesPropositions.length})</h3>
+          <div style="display:flex;flex-direction:column;gap:10px;">
+            ${mesPropositions.map(b => {
+              const filleul = findUser(b.filleulEmail);
+              return `<div style="display:flex;align-items:center;gap:14px;padding:12px;background:var(--cobalt-soft);border-radius:12px;">
+                <div class="avatar" style="width:48px;height:48px;font-size:15px;background:linear-gradient(135deg,#ffb74d,#ff9800);">${initials((filleul?.prenom||'')+' '+(filleul?.nom||''))}</div>
+                <div style="flex:1;">
+                  <b>${esc(filleul?.prenom||'')} ${esc(filleul?.nom||'')}</b><br>
+                  <span style="font-size:12px;color:var(--ink-soft);">${esc(filleul?.niveau||'')} · ${esc(filleul?.domaine||'')}</span>
+                </div>
+                <span class="badge wait">⏳ En attente · ${getBinomeCompatibility(b)}%</span>
+              </div>`;
+            }).join('')}
+          </div>
+        </div>`;
+    }
+    
+    if(mesBinomes.length === 0 && mesPropositions.length === 0){
+      binomeSection = `
+        <div class="panel">
+          <h3>Mes filleuls</h3>
+          <p style="color:var(--ink-soft);font-size:14px;">Aucun filleul assigné pour le moment. L'administrateur vous proposera des filleuls compatibles selon votre profil.</p>
+        </div>`;
+    }
+  } else {
+    // Vue filleul (inchangée, 1 seul binôme)
+    binomeSection = `
+      <div class="panel">
+        <h3>Message de l'administrateur</h3>
+        <p style="color:var(--ink-soft);font-size:14px;">L'administrateur vous assignera un binôme compatible selon votre profil. Vous serez notifié dès qu'une proposition sera validée.</p>
+      </div>`;
+  }
+  
   document.getElementById('appContent').innerHTML = `
     <div class="panel profile-card">
       <div class="avatar">${initials(u.prenom+' '+u.nom)}</div>
@@ -916,26 +1014,62 @@ function renderDashboard(){
     </div>
     <div class="stat-grid">
       <div class="stat-box"><b>${unread}</b><span>Notifications non lues</span></div>
+      ${u.role==='parrain' ? `<div class="stat-box"><b>${DB.binomes.filter(b=>b.parrainEmail===u.email && b.status==='validé').length}</b><span>Filleuls validés</span></div>` : ''}
     </div>
-    <div class="panel">
-      <h3>Message de l'administrateur</h3>
-      <p style="color:var(--ink-soft);font-size:14px;">L'administrateur vous assignera un binôme compatible selon votre profil. Vous serez notifié dès qu'une proposition sera validée.</p>
-    </div>`;
+    ${binomeSection}`;
 }
 function binomeSummaryHTML(u){
-  const pending = DB.binomes.find(b=>(b.parrainEmail===u.email||b.filleulEmail===u.email) && b.status==='proposé');
-  const valid = myBinome();
+  // Si parrain : afficher tous les filleuls
+  if(u.role === 'parrain'){
+    const validBinomes = DB.binomes.filter(b=> b.parrainEmail===u.email && b.status==='validé');
+    const pendingBinomes = DB.binomes.filter(b=> b.parrainEmail===u.email && b.status==='proposé');
+    
+    let html = '';
+    
+    if(validBinomes.length > 0){
+      html += '<div style="display:flex;flex-direction:column;gap:10px;">';
+      validBinomes.forEach(valid => {
+        const other = findUser(valid.filleulEmail);
+        html += `<div style="display:flex;align-items:center;gap:14px;"><div class="avatar" style="width:52px;height:52px;font-size:16px;">${initials((other?.prenom||'')+' '+(other?.nom||''))}</div>
+          <div><b>${esc(other?.prenom||'')} ${esc(other?.nom||'')}</b><br><span class="badge ok">Binôme validé · ${getBinomeCompatibility(valid)}% compatibilité</span></div></div>`;
+      });
+      html += '</div>';
+    }
+    
+    if(pendingBinomes.length > 0){
+      html += '<div style="display:flex;flex-direction:column;gap:10px;margin-top:10px;">';
+      pendingBinomes.forEach(pending => {
+        const other = findUser(pending.filleulEmail);
+        html += `<div style="display:flex;align-items:center;gap:14px;padding:12px;background:var(--cobalt-soft);border-radius:12px;">
+          <div class="avatar" style="width:52px;height:52px;font-size:16px;background:linear-gradient(135deg,#ffb74d,#ff9800);">${initials((other?.prenom||'')+' '+(other?.nom||''))}</div>
+          <div>
+            <b>${other ? esc(other.prenom)+' '+esc(other.nom) : 'Étudiant proposé'}</b><br>
+            <span style="font-size:12px;color:var(--ink-soft);">${other ? esc(other.niveau||'')+' · '+esc(other.domaine||'') : ''}</span><br>
+            <span class="badge wait">⏳ En attente de validation · ${getBinomeCompatibility(pending)}%</span>
+          </div>
+        </div>`;
+      });
+      html += '</div>';
+    }
+    
+    if(validBinomes.length === 0 && pendingBinomes.length === 0){
+      return `<p style="color:var(--ink-soft);font-size:14px;">Aucun filleul assigné pour le moment. L'administrateur vous proposera des filleuls compatibles.</p>`;
+    }
+    return html;
+  }
+  
+  // Si filleul : un seul binôme
+  const pending = DB.binomes.find(b=>b.filleulEmail===u.email && b.status==='proposé');
+  const valid = DB.binomes.find(b=>b.filleulEmail===u.email && b.status==='validé');
   if(valid){
-    const otherEmail = valid.parrainEmail===u.email? valid.filleulEmail: valid.parrainEmail;
-    const other = findUser(otherEmail);
-    return `<div style="display:flex;align-items:center;gap:14px;"><div class="avatar" style="width:52px;height:52px;font-size:16px;">${initials(other?.prenom+' '+other?.nom)}</div>
-      <div><b>${esc(other?.prenom)} ${esc(other?.nom)}</b><br><span class="badge ok">Binôme validé · ${getBinomeCompatibility(valid)}% compatibilité</span></div></div>`;
+    const other = findUser(valid.parrainEmail);
+    return `<div style="display:flex;align-items:center;gap:14px;"><div class="avatar" style="width:52px;height:52px;font-size:16px;">${initials((other?.prenom||'')+' '+(other?.nom||''))}</div>
+      <div><b>${esc(other?.prenom||'')} ${esc(other?.nom||'')}</b><br><span class="badge ok">Binôme validé · ${getBinomeCompatibility(valid)}% compatibilité</span></div></div>`;
   }
   if(pending){
-    const otherEmail = pending.parrainEmail===u.email? pending.filleulEmail: pending.parrainEmail;
-    const other = findUser(otherEmail);
+    const other = findUser(pending.parrainEmail);
     return `<div style="display:flex;align-items:center;gap:14px;padding:12px;background:var(--cobalt-soft);border-radius:12px;">
-      <div class="avatar" style="width:52px;height:52px;font-size:16px;background:linear-gradient(135deg,#ffb74d,#ff9800);">${initials(other?.prenom+' '+other?.nom)}</div>
+      <div class="avatar" style="width:52px;height:52px;font-size:16px;background:linear-gradient(135deg,#ffb74d,#ff9800);">${initials((other?.prenom||'')+' '+(other?.nom||''))}</div>
       <div>
         <b>${other ? esc(other.prenom)+' '+esc(other.nom) : 'Étudiant proposé'}</b><br>
         <span style="font-size:12px;color:var(--ink-soft);">${other ? esc(other.niveau||'')+' · '+esc(other.domaine||'') : ''}</span><br>
@@ -1087,8 +1221,19 @@ async function removeUserCascade(email){
 function conversationsFor(email){
   const partners = new Set();
   DB.messages.forEach(m=>{ if(m.from===email) partners.add(m.to); if(m.to===email) partners.add(m.from); });
-  const b = myBinome();
-  if(b){ partners.add(b.parrainEmail===email? b.filleulEmail : b.parrainEmail); }
+  const u = findUser(email);
+  if(u){
+    // Pour un parrain : inclure tous ses filleuls validés
+    if(u.role === 'parrain'){
+      DB.binomes.filter(b=> b.parrainEmail===email && b.status==='validé').forEach(b=>{
+        partners.add(b.filleulEmail);
+      });
+    } else {
+      // Pour un filleul : son parrain validé
+      const b = DB.binomes.find(b=> b.filleulEmail===email && b.status==='validé');
+      if(b) partners.add(b.parrainEmail);
+    }
+  }
   return [...partners];
 }
 function renderMessages(){
@@ -1251,22 +1396,33 @@ async function adminDeleteUser(email){
 }
 function renderAdminBinomes(){
   const parrains = DB.users.filter(u=>u.role==='parrain' && u.status!=='suspendu');
-  const filleuls = DB.users.filter(u=>u.role==='filleul' && u.status!=='suspendu');
+  // Un filleul disponible = pas déjà dans un binôme validé ou proposé
+  const filleuls = DB.users.filter(u=>u.role==='filleul' && u.status==='actif' && 
+    !DB.binomes.some(b=>b.filleulEmail===u.email && b.status!=='refusé'));
   const canCreate = parrains.length > 0 && filleuls.length > 0;
+  
+  // Compter les filleuls actuels par parrain
+  function parrainFilleulCount(email){
+    return DB.binomes.filter(b=>b.parrainEmail===email && b.status==='validé').length;
+  }
 
   document.getElementById('appContent').innerHTML = `
     <div class="panel">
       <h3>Créer un binôme manuellement</h3>
       <div class="form-grid">
-        <div class="field"><label>Parrain</label><select id="manParrain" ${parrains.length?'':'disabled'}>
-          ${parrains.map(u=>`<option value="${escAttr(u.email)}">${esc(u.prenom)} ${esc(u.nom)}</option>`).join('') || '<option value="">Aucun parrain disponible</option>'}
+        <div class="field"><label>Parrain (peut avoir plusieurs filleuls)</label><select id="manParrain" ${parrains.length?'':'disabled'}>
+          ${parrains.map(u=>{
+            const count = parrainFilleulCount(u.email);
+            const suffix = count > 0 ? ` (${count} filleul${count>1?'s':''} actuel${count>1?'s':''})` : '';
+            return `<option value="${escAttr(u.email)}">${esc(u.prenom)} ${esc(u.nom)}${suffix}</option>`;
+          }).join('') || '<option value="">Aucun parrain disponible</option>'}
         </select></div>
-        <div class="field"><label>Filleul</label><select id="manFilleul" ${filleuls.length?'':'disabled'}>
+        <div class="field"><label>Filleul disponible (sans binôme)</label><select id="manFilleul" ${filleuls.length?'':'disabled'}>
           ${filleuls.map(u=>`<option value="${escAttr(u.email)}">${esc(u.prenom)} ${esc(u.nom)}</option>`).join('') || '<option value="">Aucun filleul disponible</option>'}
         </select></div>
       </div>
       <button class="btn btn-primary" onclick="createBinomeManual()" ${canCreate?'':'disabled'}>Créer le binôme</button>
-      ${canCreate?'':'<p style="color:var(--ink-soft);font-size:13px;">Il faut au moins un parrain et un filleul actifs.</p>'}
+      ${canCreate?'':'<p style="color:var(--ink-soft);font-size:13px;">Il faut au moins un parrain et un filleul sans binôme.</p>'}
     </div>
     <div class="panel">
       <h3>Propositions et binômes</h3>
@@ -1461,17 +1617,19 @@ async function createBinomeManual(){
     const filleulEmail=document.getElementById('manFilleul').value;
     if(!parrainEmail||!filleulEmail){ toast("Sélectionnez un parrain et un filleul."); return; }
     if(parrainEmail===filleulEmail){ toast("Le parrain et le filleul ne peuvent pas être la même personne."); return; }
-    // Vérifier qu'ils ne sont pas déjà dans un binôme actif ou proposé
-    const parrainBusy = DB.binomes.some(b=>b.parrainEmail===parrainEmail && b.status!=='refusé');
+    // Un parrain peut avoir PLUSIEURS filleuls (pas de blocage)
+    // Un filleul ne peut avoir qu'UN SEUL parrain actif
     const filleulBusy = DB.binomes.some(b=>b.filleulEmail===filleulEmail && b.status!=='refusé');
-    if(parrainBusy){ const p=findUser(parrainEmail); toast(`${p?.prenom} ${p?.nom} est déjà dans un binôme actif.`); return; }
     if(filleulBusy){ const f=findUser(filleulEmail); toast(`${f?.prenom} ${f?.nom} est déjà dans un binôme actif.`); return; }
+    // Vérifier que ce binôme exact n'existe pas déjà
+    const alreadyExists = DB.binomes.some(b=>b.parrainEmail===parrainEmail && b.filleulEmail===filleulEmail && b.status!=='refusé');
+    if(alreadyExists){ toast("Ce binôme existe déjà."); return; }
     const parrain = findUser(parrainEmail);
     const filleul = findUser(filleulEmail);
     const compat = calculateCompatibility(parrain, filleul);
     DB.binomes.push({id:uid(), parrainEmail, filleulEmail, status:'validé', compat, createdAt:Date.now(), manual:true});
     await saveKey('binomes');
-    await notify(parrainEmail,"Un binôme a été créé manuellement par l'administrateur.");
+    await notify(parrainEmail,"Un nouveau filleul vous a été assigné par l'administrateur.");
     await notify(filleulEmail,"Un binôme a été créé manuellement par l'administrateur.");
     toast("Binôme créé et validé."); renderAdminBinomes();
   });
